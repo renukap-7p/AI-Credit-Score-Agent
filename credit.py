@@ -1,4 +1,4 @@
-!pip install -q gradio pandas matplotlib numpy google-genai
+
 
 import os
 import gradio as gr
