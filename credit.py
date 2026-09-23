@@ -1,52 +1,94 @@
+!pip install -q gradio pandas matplotlib numpy google-genai
+
 import os
 import gradio as gr
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from anthropic import Anthropic
+from google import genai
+from google.genai import types
 
 # ----------------------------------------------------------------------
 # LLM CONFIG — the customer/user never sees any of this. It just powers
-# the "AI Agent" behind the scenes.
+# the "AI Agent" behind the scenes. Key comes from Google AI Studio.
 #
-# Set your key as an environment variable BEFORE running this cell:
+# 1. Get a free key at https://aistudio.google.com/apikey
+# 2. Set it as an environment variable BEFORE running this cell:
 #   - In Google Colab: use the "Secrets" tab (key icon on the left) to
-#     add a secret named ANTHROPIC_API_KEY, then:
+#     add a secret named GEMINI_API_KEY, then:
 #         from google.colab import userdata
-#         os.environ["ANTHROPIC_API_KEY"] = userdata.get("ANTHROPIC_API_KEY")
-#   - Locally: export ANTHROPIC_API_KEY="sk-ant-..." in your terminal
+#         os.environ["GEMINI_API_KEY"] = userdata.get("GEMINI_API_KEY")
+#   - Locally: export GEMINI_API_KEY="AIza..." in your terminal
 #
 # Never hardcode the key directly in the script.
 # ----------------------------------------------------------------------
-LLM_MODEL = "claude-sonnet-4-5"   # swap to "claude-haiku-4-5" for a cheaper/faster agent
+LLM_MODEL = "gemini-flash-latest"
 client = None
-if os.environ.get("ANTHROPIC_API_KEY"):
-    client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+ENV_API_KEY = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+if ENV_API_KEY:
+    client = genai.Client(api_key=ENV_API_KEY)
 
 
 def check_llm_connection():
-    """Live connectivity check — not just 'is a key present', but an
-    actual 1-token round trip to Claude, so the badge only ever shows
-    green when the model is genuinely reachable right now."""
+    """Actually tests the configured Gemini key with a small API request."""
     if client is None:
-        return ("🔴 **LLM Status: Offline** — no `ANTHROPIC_API_KEY` found in the environment. "
-                "Agent is running on rule-based fallback only.")
+        return ("🔴 **LLM Status: Offline** — no Gemini API key is configured. "
+                "Paste a Google AI Studio key above and click Connect.")
+
     try:
-        client.messages.create(
+        client.models.generate_content(
             model=LLM_MODEL,
-            max_tokens=1,
-            messages=[{"role": "user", "content": "ping"}],
+            contents="ping",
+            config=types.GenerateContentConfig(max_output_tokens=5),
         )
-        return f"🟢 **LLM Status: Connected** — live to `{LLM_MODEL}` via the Anthropic API."
+        return (
+            f"🟢 **LLM Status: Connected** — `{LLM_MODEL}` is reachable "
+            "through the Gemini API."
+        )
     except Exception as e:
-        return (f"🟡 **LLM Status: Key found, but the call failed** "
-                f"({str(e)[:100]}). Falling back to rule-based mode until this clears.")
+        print(f"[LLM connection check failed] {e}")
+        return (
+            "🟡 **LLM Status: Key found, but Gemini rejected the connection.** "
+            "Check that the key is valid, the Gemini API is enabled for that key, "
+            "and the selected model is available. Then click Connect again."
+        )
+
+
+def connect_llm(api_key):
+    """Called when the user pastes a key into the web UI and clicks
+    Connect. Creates a fresh client with THAT key, does a real test
+    call, and only wires it in globally if the call actually succeeds —
+    so the badge can never lie about being connected."""
+    global client
+
+    if not api_key or not api_key.strip():
+        client = None
+        return "🔴 **LLM Status: Offline** — the API key field is empty. Paste your key and click Connect."
+
+    try:
+        candidate = genai.Client(api_key=api_key.strip())
+        candidate.models.generate_content(
+            model=LLM_MODEL,
+            contents="ping",
+            config=types.GenerateContentConfig(max_output_tokens=5),
+        )
+        client = candidate  # only adopt it once the test call succeeds
+        return f"🟢 **LLM Status: Connected** — live to `{LLM_MODEL}` via the Google AI Studio (Gemini) API."
+    except Exception as e:
+        client = None
+        print(f"[LLM connect failed] {e}")  # full error stays in console/logs
+        return (
+            "🟡 **LLM Status: Connection failed.** "
+            "The key was received, but Gemini rejected the test request. "
+            "Check the API key, Gemini API access, and model availability."
+        )
 
 
 class EnhancedCreditAgent:
     """Enhanced AI Agent for credit optimization with visual plotting,
-    structured analysis, and an LLM (Claude) layer that generates the
-    natural-language narrative and answers follow-up questions."""
+    structured analysis, and an LLM (Google Gemini, via Google AI Studio)
+    layer that generates the natural-language narrative and answers
+    follow-up questions."""
 
     # ------------------------------------------------------------------
     # Core deterministic scoring logic — unchanged. This is the "engine"
@@ -159,14 +201,14 @@ class EnhancedCreditAgent:
         report += narrative + "\n\n"
         report += "### Actionable Steps:\n" + "\n".join([f"- {r}" for r in recommendations]) + "\n\n"
         report += "### Agent Execution Logs:\n" + "\n".join([f"`{log}`" for log in agent_logs])
-        report += f"\n\n`LOG: Narrative generation via {'Claude (' + LLM_MODEL + ')' if used_llm else 'rule-based fallback'}.`"
+        report += f"\n\n`LOG: Narrative generation via {'Gemini (' + LLM_MODEL + ')' if used_llm else 'rule-based fallback'}.`"
         if error_msg:
-            report += f"\n\n`LOG: LLM error — {error_msg}`"
+            print(f"[LLM narrative generation failed] {error_msg}")  # detail stays in console only
 
         if used_llm:
             badge = f"🟢 **LLM Status: Connected** — this report was generated live by `{LLM_MODEL}`."
         elif client is None:
-            badge = ("🔴 **LLM Status: Offline** — no `ANTHROPIC_API_KEY` found in the environment. "
+            badge = ("🔴 **LLM Status: Offline** — no Gemini API key is configured. "
                       "Agent is running on rule-based fallback only.")
         else:
             badge = (f"🟡 **LLM Status: Key found, but the call failed** "
@@ -201,12 +243,12 @@ Projected point gain if issues fixed: +{state['projected_gain']}
 Target score: {state['target_score']}
 """
         try:
-            response = client.messages.create(
+            response = client.models.generate_content(
                 model=LLM_MODEL,
-                max_tokens=350,
-                messages=[{"role": "user", "content": prompt}],
+                contents=prompt,
+                config=types.GenerateContentConfig(max_output_tokens=350),
             )
-            return response.content[0].text.strip(), True, None
+            return response.text.strip(), True, None
         except Exception as e:
             # Never let an API hiccup break the demo — fall back quietly,
             # but report the real error so the status badge is honest.
@@ -238,13 +280,15 @@ Target score: {state['target_score']}
 Recommendations: {"; ".join(state['recommendations'])}
 
 Keep answers concise (2-4 sentences), warm, and actionable."""
-                response = client.messages.create(
+                response = client.models.generate_content(
                     model=LLM_MODEL,
-                    max_tokens=300,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": message}],
+                    contents=message,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system_prompt,
+                        max_output_tokens=300,
+                    ),
                 )
-                return response.content[0].text.strip()
+                return response.text.strip()
             except Exception:
                 pass  # fall through to rule-based backup below — chat never breaks
 
@@ -307,9 +351,15 @@ with gr.Blocks(title="AI Credit Score Guidance Agent") as demo:
     gr.Markdown("Adjust your financial profile parameters to trigger the AI agent's analysis, metric comparison, and visualization engine.")
 
     with gr.Row():
-        status_box = gr.Markdown(check_llm_connection())
-        recheck_btn = gr.Button("🔄 Recheck LLM Connection", size="sm", scale=0)
-    recheck_btn.click(fn=check_llm_connection, outputs=status_box)
+        api_key_in = gr.Textbox(
+            label="Google Gemini API Key",
+            type="password",
+            placeholder="Paste your Google AI Studio key here (starts with AIza...)",
+            scale=3,
+        )
+        connect_btn = gr.Button("🔌 Connect", scale=0, variant="primary")
+    status_box = gr.Markdown(check_llm_connection())
+    connect_btn.click(fn=connect_llm, inputs=api_key_in, outputs=status_box)
 
     with gr.Row():
         with gr.Column(scale=1):
@@ -337,12 +387,4 @@ with gr.Blocks(title="AI Credit Score Guidance Agent") as demo:
     gr.Markdown("Run an assessment above first, then ask follow-up questions — e.g. *\"How can I raise my score?\"* or *\"What about my inquiries?\"*")
     gr.ChatInterface(fn=agent.chat_reply)
 
-if __name__ == "__main__":
-    # Render assigns the port dynamically via the PORT env var, and the
-    # server must bind to 0.0.0.0 (not 127.0.0.1) to be reachable from
-    # outside the container. No share=True needed — Render gives a
-    # permanent public URL on its own.
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=int(os.environ.get("PORT", 7860)),
-    )
+demo.launch(share=True, debug=True)
